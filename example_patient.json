@@ -1,0 +1,10 @@
+{
+  "gender": "Female",
+  "age": 45,
+  "hypertension": 0,
+  "heart_disease": 0,
+  "smoking_history": "never",
+  "bmi": 28.5,
+  "hba1c_level": 6.5,
+  "blood_glucose_level": 140
+}
