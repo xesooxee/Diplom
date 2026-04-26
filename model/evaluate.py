@@ -272,11 +272,12 @@ def plot_metrics_table(metrics_dict: dict):
     # Мөр бүрийн загварын өнгө
     for i, name in enumerate(rows):
         tbl[(i + 1, -1)].set_text_props(color=COLORS[name], fontweight="bold")
-        # Хамгийн сайн утгыг тодруулах
-        col_vals = [float(metrics_dict[r][measures[j]]) for r in rows]
+
+    # Багана бүрийн хамгийн сайн утгыг тодруулах
+    for j, measure in enumerate(measures):
+        col_vals = [float(metrics_dict[r][measure]) for r in rows]
         best_row = int(np.argmax(col_vals))
-        if i == best_row:
-            tbl[(i + 1, j)].set_facecolor("#e8f7f6")
+        tbl[(best_row + 1, j)].set_facecolor("#e8f7f6")
 
     ax.set_title("Загваруудын харьцуулсан үнэлгээний хүснэгт",
                  fontsize=13, fontweight="bold", pad=12)
@@ -329,6 +330,20 @@ def main():
     plot_feature_importance(MODELS["Random Forest"])
     plot_radar(metrics_dict)
     plot_metrics_table(metrics_dict)
+
+    # metrics.json хадгалах — main.py best model сонгоход ашиглана
+    import json
+    KEY_MAP = {
+        "Random Forest":       "rf",
+        "Logistic Regression": "lr",
+        "SVM":                 "svm",
+        "XGBoost":             "xgb",
+    }
+    json_out = {KEY_MAP[n]: m for n, m in metrics_dict.items()}
+    metrics_path = OUT_DIR / "metrics.json"
+    with open(metrics_path, "w") as f:
+        json.dump(json_out, f, indent=2)
+    print(f"  ✓ {metrics_path}  (best model сонгоход ашиглана)")
 
     print(f"\n✅ Бүх диаграм хадгалагдлаа → {OUT_DIR}/\n")
     print("   01_roc_curves.png         — ROC муруй")

@@ -46,10 +46,16 @@ def load_and_engineer(cfg):
     df = pd.read_csv(cfg["csv_path"])
     print(f"📂 Өгөгдөл ачаалагдлаа: {df.shape[0]:,} мөр, {df.shape[1]} багана")
 
-    # Categorical → numeric
+    # Categorical → numeric; encoder-уудыг хадгалж main.py inference-д ачаална
+    encoders: dict = {}
     for col in cfg["categorical_cols"]:
         le = LabelEncoder()
         df[col] = le.fit_transform(df[col].astype(str))
+        encoders[col] = le
+
+    enc_path = BASE_DIR / "model" / "encoders.pkl"
+    enc_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(encoders, enc_path)
 
     # Feature Engineering (сайжруулалт)
     df['glucose_hba1c_ratio'] = df['blood_glucose_level'] / (df['HbA1c_level'] + 1e-5)
@@ -72,15 +78,20 @@ def load_and_engineer(cfg):
 # Гол сургалтын функц
 # ─────────────────────────────────────────────────────────────
 def train_improved_xgboost(X, y, cfg, all_features):
-    # Train-test split
+    # Train-test split (test set нь эцсийн үнэлгээнд л ашиглагдана)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    # SMOTE ашиглан imbalance засах
-    print(f"\n SMOTE хийж байна... (Original positive: {y_train.sum()})")
+    # Threshold tuning-д зориулсан validation set (train-аас тусгаарлана)
+    X_train_fit, X_val, y_train_fit, y_val = train_test_split(
+        X_train, y_train, test_size=0.15, random_state=42, stratify=y_train
+    )
+
+    # SMOTE ашиглан imbalance засах (зөвхөн train дээр!)
+    print(f"\n SMOTE хийж байна... (Original positive: {y_train_fit.sum()})")
     smote = SMOTE(random_state=42)
-    X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
+    X_train_res, y_train_res = smote.fit_resample(X_train_fit, y_train_fit)
     print(f"   SMOTE-ийн дараа positive: {y_train_res.sum()}")
 
     # Hyperparameter search
@@ -118,24 +129,24 @@ def train_improved_xgboost(X, y, cfg, all_features):
     print(f" Best params: {search.best_params_}")
     print(f" Best CV ROC-AUC: {search.best_score_:.4f}")
 
-    # Test set дээр таамаглал
-    y_prob = best_model.predict_proba(X_test)[:, 1]
+    # Validation set дээр threshold tuning (test set-ийг хөндөхгүй)
+    y_val_prob = best_model.predict_proba(X_val)[:, 1]
 
-    # Threshold Tuning (F1-score дээр үндэслэн)
     thresholds = np.arange(0.3, 0.8, 0.01)
     best_f1 = 0
     best_thresh = 0.5
 
     for thresh in thresholds:
-        y_pred_t = (y_prob >= thresh).astype(int)
-        current_f1 = f1_score(y_test, y_pred_t)
+        y_pred_t = (y_val_prob >= thresh).astype(int)
+        current_f1 = f1_score(y_val, y_pred_t)
         if current_f1 > best_f1:
             best_f1 = current_f1
             best_thresh = thresh
 
-    print(f"\n Оновчтой Threshold (F1-max): {best_thresh:.3f}  (F1 = {best_f1:.4f})")
+    print(f"\n Оновчтой Threshold (validation F1-max): {best_thresh:.3f}  (F1 = {best_f1:.4f})")
 
-    # Шилдэг threshold-ээр эцсийн таамаглал
+    # Test set дээр таамаглал (threshold validation дээр сонгогдсон)
+    y_prob = best_model.predict_proba(X_test)[:, 1]
     y_pred = (y_prob >= best_thresh).astype(int)
 
     print("\n── Эцсийн үр дүн (Best Threshold) ─────────────────────")

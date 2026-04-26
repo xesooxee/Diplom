@@ -2,7 +2,7 @@
 Чихрийн шижин таамаглах — SUPPORT VECTOR MACHINE (SVM)
 ======================================================
 Ажиллуулах жишээ:
-  python model/train.py --dataset new --predict
+  python model/svm.py
 """
 
 import argparse
@@ -16,7 +16,7 @@ import pandas as pd
 
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_auc_score
-from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
@@ -24,17 +24,7 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 
 # Тохиргоо
-PIMA_CONFIG = {
-    "csv_path": str(BASE_DIR / "data" / "diabetes.csv"),
-    "target": "Outcome",
-    "zero_fix_cols": ["Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI"],
-    "features": ["Pregnancies", "Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI", "DiabetesPedigreeFunction", "Age"],
-    "categorical_cols": [],
-    "model_dir": str(BASE_DIR / "model" / "svm_pima"),
-    "labels": ["Эрүүл", "Чихрийн шижин"],
-}
-
-NEW_CONFIG = {
+CONFIG = {
     "csv_path": str(BASE_DIR / "data" / "diabetes.csv"),
     "target": "diabetes",
     "zero_fix_cols": [],
@@ -44,14 +34,20 @@ NEW_CONFIG = {
     "labels": ["Эрүүл", "Чихрийн шижин"],
 }
 
-SVM_PARAMS = {
-    "kernel": "rbf",
-    "C": 10.0,
-    "gamma": "scale",
+# RandomizedSearchCV-д ашиглах parameter grid
+# Pipeline-тай ашигладаг тул "clf__" prefix шаардлагатай
+SVM_PARAM_DIST = {
+    "clf__C":      [0.1, 1.0, 10.0, 100.0],
+    "clf__gamma":  ["scale", "auto", 0.001, 0.01, 0.1],
+    "clf__kernel": ["rbf", "sigmoid"],
+}
+
+# Суурь SVM тохиргоо (class_weight, probability бол туning-д оролцохгүй)
+SVM_BASE = {
     "class_weight": "balanced",
-    "probability": True,
+    "probability":  True,
     "random_state": 42,
-    "max_iter": 1000,
+    "max_iter":     5000,
 }
 
 def load_and_prepare(cfg):
@@ -68,10 +64,26 @@ def load_and_prepare(cfg):
                 df[col] = df[col].replace(0, np.nan)
                 df[col] = df[col].fillna(df[col].median())
 
+    # Fit хийсэн encoder-уудыг pkl-д хадгалж, main.py inference-д ачаална.
+    EXPECTED_GENDER  = ["Female", "Male"]
+    EXPECTED_SMOKING = ["No Info", "current", "ever", "former", "never", "not current"]
+    encoders: dict = {}
     for col in cfg["categorical_cols"]:
         if col in df.columns:
             le = LabelEncoder()
             df[col] = le.fit_transform(df[col].astype(str))
+            encoders[col] = le
+            classes = list(le.classes_)
+            if col == "gender":
+                assert classes == EXPECTED_GENDER, \
+                    f"gender encoding өөрчлөгдлөө! Одоо: {classes}. main.py-ийн _encode()-г шинэчилнэ үү."
+            elif col == "smoking_history":
+                assert classes == EXPECTED_SMOKING, \
+                    f"smoking_history encoding өөрчлөгдлөө! Одоо: {classes}. main.py-ийн SMOKING_CLASSES-г шинэчилнэ үү."
+
+    enc_path = BASE_DIR / "model" / "encoders.pkl"
+    enc_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(encoders, enc_path)
 
     X = df[cfg["features"]].copy()
     y = df[cfg["target"]].copy()
@@ -86,19 +98,35 @@ def train_svm(X, y, cfg):
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     print(f"\n Train: {len(X_train)}, Test: {len(X_test)}")
 
+    # Pipeline: StandardScaler + SVC
     pipe = Pipeline([
         ("scaler", StandardScaler()),
-        ("clf", SVC(**SVM_PARAMS)),
+        ("clf", SVC(**SVM_BASE)),
     ])
 
+    # ── Hyperparameter Tuning (RandomizedSearchCV) ──────────────
+    # RF болон XGBoost-тай адил оновчтой параметр хайна
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    cv_scores = cross_val_score(pipe, X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=-1)
-    print(f" 5-Fold CV ROC-AUC: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+    search = RandomizedSearchCV(
+        estimator=pipe,
+        param_distributions=SVM_PARAM_DIST,
+        n_iter=20,
+        scoring="roc_auc",
+        cv=cv,
+        verbose=1,
+        random_state=42,
+        n_jobs=-1,
+    )
+    print("\n🔍 SVM Hyperparameter Tuning эхэлж байна...")
+    search.fit(X_train, y_train)
 
-    pipe.fit(X_train, y_train)
+    best_pipe = search.best_estimator_
+    print(f" Best params : {search.best_params_}")
+    print(f" Best CV ROC-AUC: {search.best_score_:.4f}")
 
-    y_pred = pipe.predict(X_test)
-    y_prob = pipe.predict_proba(X_test)[:, 1]
+    # ── Эцсийн үнэлгээ (test set) ────────────────────────────────
+    y_pred = best_pipe.predict(X_test)
+    y_prob = best_pipe.predict_proba(X_test)[:, 1]
 
     print(f"\n SVM Accuracy : {accuracy_score(y_test, y_pred):.4f}")
     print(f" ROC-AUC      : {roc_auc_score(y_test, y_prob):.4f}")
@@ -114,17 +142,14 @@ def train_svm(X, y, cfg):
 
     # Хадгалах
     os.makedirs(cfg["model_dir"], exist_ok=True)
-    joblib.dump(pipe, os.path.join(cfg["model_dir"], "pipeline.pkl"))
+    joblib.dump(best_pipe, os.path.join(cfg["model_dir"], "pipeline.pkl"))
     print(f"\n SVM модель хадгалагдлаа → {cfg['model_dir']}/pipeline.pkl")
 
-    return pipe
+    return best_pipe
 
 
-def predict_sample(pipe, cfg, dataset):
+def predict_sample(pipe, cfg):
     sample = pd.DataFrame([{
-        "Pregnancies": 2, "Glucose": 138, "BloodPressure": 62, "SkinThickness": 35,
-        "Insulin": 0, "BMI": 33.6, "DiabetesPedigreeFunction": 0.627, "Age": 50
-    }]) if dataset == "pima" else pd.DataFrame([{
         "gender": "Female", "age": 45.0, "hypertension": 0, "heart_disease": 0,
         "smoking_history": "never", "bmi": 28.5, "HbA1c_level": 6.5, "blood_glucose_level": 140
     }])
@@ -145,21 +170,20 @@ def predict_sample(pipe, cfg, dataset):
 
 def main():
     parser = argparse.ArgumentParser(description="SVM Чихрийн шижин таамаглал")
-    parser.add_argument("--dataset", choices=["pima", "new"], default="new")
     parser.add_argument("--predict", action="store_true")
     args = parser.parse_args()
 
-    cfg = PIMA_CONFIG if args.dataset == "pima" else NEW_CONFIG
+    cfg = CONFIG
 
     print("=" * 70)
-    print(f"  🩺 SVM Чихрийн шижин таамаглал — [{args.dataset.upper()}]")
+    print("  🩺 SVM Чихрийн шижин таамаглал")
     print("=" * 70)
 
     X, y = load_and_prepare(cfg)
     pipe = train_svm(X, y, cfg)
 
     if args.predict:
-        predict_sample(pipe, cfg, args.dataset)
+        predict_sample(pipe, cfg)
 
     print("\n✔ Дууслаа!\n")
 

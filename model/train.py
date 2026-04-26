@@ -1,10 +1,10 @@
 """
-Чихрийн шижин таамаглах ML Pipeline
-=====================================
+Чихрийн шижин таамаглах ML Pipeline — Random Forest
+=====================================================
 Ажиллуулах арга:
-  cd /Users/temuulen/Documents/diplom/backend
-  python model/train.py --dataset pima
-  python model/train.py --dataset pima --predict
+  cd <төслийн үндсэн хавтас>
+  python model/train.py
+  python model/train.py --predict
 """
 
 import argparse
@@ -34,21 +34,7 @@ BASE_DIR = pathlib.Path(__file__).resolve().parent.parent  # → backend/
 # ─────────────────────────────────────────────────────────────
 # 1. Тохиргоо (Config)
 # ─────────────────────────────────────────────────────────────
-PIMA_CONFIG = {
-    "csv_path":        str(BASE_DIR / "data" / "diabetes.csv"),
-    "target":          "Outcome",
-    "zero_fix_cols":   ["Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI"],
-    "features": [
-        "Pregnancies", "Glucose", "BloodPressure",
-        "SkinThickness", "Insulin", "BMI",
-        "DiabetesPedigreeFunction", "Age",
-    ],
-    "categorical_cols": [],
-    "model_dir":        str(BASE_DIR / "model" / "pima"),
-    "labels":           ["Эрүүл", "Чихрийн шижин"],
-}
-
-NEW_CONFIG = {
+CONFIG = {
     "csv_path":        str(BASE_DIR / "data" / "diabetes.csv"),
     "target":          "diabetes",
     "zero_fix_cols":   [],
@@ -95,11 +81,28 @@ def load_and_prepare(cfg: dict) -> tuple[pd.DataFrame, pd.Series]:
                 print(f"  ✔ {col}: {n_zeros} тэгийг медианаар ({df[col].median():.1f}) орлуулав")
 
     # Categorical → numeric (LabelEncoder)
+    # Fit хийсэн encoder-уудыг pkl-д хадгалж, main.py inference-д ачаална.
+    EXPECTED_GENDER  = ["Female", "Male"]
+    EXPECTED_SMOKING = ["No Info", "current", "ever", "former", "never", "not current"]
+    encoders: dict = {}
     for col in cfg["categorical_cols"]:
         if col in df.columns:
             le = LabelEncoder()
             df[col] = le.fit_transform(df[col].astype(str))
-            print(f"  ✔ {col}: категори → тоо болгов  ({list(le.classes_)})")
+            encoders[col] = le
+            classes = list(le.classes_)
+            if col == "gender":
+                assert classes == EXPECTED_GENDER, \
+                    f"gender encoding өөрчлөгдлөө! Одоо: {classes}. main.py-ийн _encode()-г шинэчилнэ үү."
+            elif col == "smoking_history":
+                assert classes == EXPECTED_SMOKING, \
+                    f"smoking_history encoding өөрчлөгдлөө! Одоо: {classes}. main.py-ийн SMOKING_CLASSES-г шинэчилнэ үү."
+            print(f"  ✔ {col}: категори → тоо болгов  ({classes})")
+
+    enc_path = BASE_DIR / "model" / "encoders.pkl"
+    enc_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(encoders, enc_path)
+    print(f"  ✔ Encoder-ууд хадгалагдлаа → {enc_path.name}")
 
     # Байхгүй feature шалгах
     missing = [f for f in cfg["features"] if f not in df.columns]
@@ -181,21 +184,15 @@ def train_and_evaluate(X: pd.DataFrame, y: pd.Series, cfg: dict) -> Pipeline:
 # ─────────────────────────────────────────────────────────────
 # 4. Жишээ таамаглал
 # ─────────────────────────────────────────────────────────────
-SAMPLE_PIMA = pd.DataFrame([{
-    "Pregnancies": 2, "Glucose": 138, "BloodPressure": 62,
-    "SkinThickness": 35, "Insulin": 0, "BMI": 33.6,
-    "DiabetesPedigreeFunction": 0.627, "Age": 50,
-}])
-
-SAMPLE_NEW = pd.DataFrame([{
+SAMPLE = pd.DataFrame([{
     "gender": "Female", "age": 45.0, "hypertension": 0, "heart_disease": 0,
     "smoking_history": "never", "bmi": 28.5, "HbA1c_level": 6.5,
     "blood_glucose_level": 140,
 }])
 
 
-def predict_sample(pipe: Pipeline, cfg: dict, dataset: str):
-    sample = SAMPLE_PIMA.copy() if dataset == "pima" else SAMPLE_NEW.copy()
+def predict_sample(pipe: Pipeline, cfg: dict):
+    sample = SAMPLE.copy()
 
     for col in cfg["categorical_cols"]:
         if col in sample.columns:
@@ -219,19 +216,15 @@ def predict_sample(pipe: Pipeline, cfg: dict, dataset: str):
 def main():
     parser = argparse.ArgumentParser(description="Чихрийн шижин таамаглах ML Pipeline")
     parser.add_argument(
-        "--dataset", choices=["pima", "new"], default="new",
-        help="Датасет сонгох: 'pima' эсвэл 'new'"
-    )
-    parser.add_argument(
         "--predict", action="store_true",
         help="Сургасны дараа жишээ таамаглал ажиллуулах"
     )
     args = parser.parse_args()
 
-    cfg = PIMA_CONFIG if args.dataset == "pima" else NEW_CONFIG
+    cfg = CONFIG
 
     print("=" * 58)
-    print(f"   Чихрийн шижин ML Pipeline  —  [{args.dataset.upper()}]")
+    print(f"   Чихрийн шижин ML Pipeline")
     print(f"   BASE_DIR: {BASE_DIR}")
     print("=" * 58)
 
@@ -239,7 +232,7 @@ def main():
     pipe  = train_and_evaluate(X, y, cfg)
 
     if args.predict:
-        predict_sample(pipe, cfg, args.dataset)
+        predict_sample(pipe, cfg)
 
     print("\n✔ Амжилттай дууслаа!\n")
 

@@ -2,8 +2,9 @@
 Чихрийн шижин таамаглах ML Pipeline — LOGISTIC REGRESSION
 ============================================================
 Ажиллуулах арга:
-  cd /Users/temuulen/Documents/diplom/backend
-  python model/train.py --dataset new --predict
+  cd <төслийн үндсэн хавтас>
+  python model/logisticRegression.py
+  python model/logisticRegression.py --predict
 """
 
 import argparse
@@ -34,20 +35,7 @@ BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 # ─────────────────────────────────────────────────────────────
 # 1. Тохиргоо (Config)
 # ─────────────────────────────────────────────────────────────
-PIMA_CONFIG = {
-    "csv_path":        str(BASE_DIR / "data" / "diabetes.csv"),
-    "target":          "Outcome",
-    "zero_fix_cols":   ["Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI"],
-    "features": [
-        "Pregnancies", "Glucose", "BloodPressure", "SkinThickness",
-        "Insulin", "BMI", "DiabetesPedigreeFunction", "Age",
-    ],
-    "categorical_cols": [],
-    "model_dir":        str(BASE_DIR / "model" / "logistic_pima"),
-    "labels":           ["Эрүүл", "Чихрийн шижин"],
-}
-
-NEW_CONFIG = {
+CONFIG = {
     "csv_path":        str(BASE_DIR / "data" / "diabetes.csv"),
     "target":          "diabetes",
     "zero_fix_cols":   [],
@@ -89,11 +77,28 @@ def load_and_prepare(cfg: dict):
                 print(f"  ✔ {col}: {n_zeros} тэгийг медианаар солив")
 
     # Категори багануудыг тоон болгох
+    # Fit хийсэн encoder-уудыг pkl-д хадгалж, main.py inference-д ачаална.
+    EXPECTED_GENDER  = ["Female", "Male"]
+    EXPECTED_SMOKING = ["No Info", "current", "ever", "former", "never", "not current"]
+    encoders: dict = {}
     for col in cfg["categorical_cols"]:
         if col in df.columns:
             le = LabelEncoder()
             df[col] = le.fit_transform(df[col].astype(str))
-            print(f"  ✔ {col}: категори → тоо болгов")
+            encoders[col] = le
+            classes = list(le.classes_)
+            if col == "gender":
+                assert classes == EXPECTED_GENDER, \
+                    f"gender encoding өөрчлөгдлөө! Одоо: {classes}. main.py-ийн _encode()-г шинэчилнэ үү."
+            elif col == "smoking_history":
+                assert classes == EXPECTED_SMOKING, \
+                    f"smoking_history encoding өөрчлөгдлөө! Одоо: {classes}. main.py-ийн SMOKING_CLASSES-г шинэчилнэ үү."
+            print(f"  ✔ {col}: категори → тоо болгов  ({classes})")
+
+    enc_path = BASE_DIR / "model" / "encoders.pkl"
+    enc_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(encoders, enc_path)
+    print(f"  ✔ Encoder-ууд хадгалагдлаа → {enc_path.name}")
 
     missing = [f for f in cfg["features"] if f not in df.columns]
     if missing:
@@ -174,27 +179,20 @@ def train_logistic_regression(X: pd.DataFrame, y: pd.Series, cfg: dict):
 # ─────────────────────────────────────────────────────────────
 # 4. Жишээ таамаглал
 # ─────────────────────────────────────────────────────────────
-SAMPLE_PIMA = pd.DataFrame([{
-    "Pregnancies": 2, "Glucose": 138, "BloodPressure": 62,
-    "SkinThickness": 35, "Insulin": 0, "BMI": 33.6,
-    "DiabetesPedigreeFunction": 0.627, "Age": 50,
-}])
-
-SAMPLE_NEW = pd.DataFrame([{
+SAMPLE = pd.DataFrame([{
     "gender": "Female", "age": 45.0, "hypertension": 0, "heart_disease": 0,
     "smoking_history": "never", "bmi": 28.5, "HbA1c_level": 6.5,
     "blood_glucose_level": 140,
 }])
 
 
-def predict_sample(pipe, cfg, dataset: str):
-    sample = SAMPLE_PIMA.copy() if dataset == "pima" else SAMPLE_NEW.copy()
+def predict_sample(pipe, cfg):
+    sample = SAMPLE.copy()
 
-    # Категори колоннуудыг тоон болгох
     for col in cfg["categorical_cols"]:
         if col in sample.columns:
             le = LabelEncoder()
-            le.fit(["Female", "Male"] if col == "gender" 
+            le.fit(["Female", "Male"] if col == "gender"
                    else ["No Info", "current", "ever", "former", "never", "not current"])
             sample[col] = le.transform(sample[col].astype(str))
 
@@ -211,21 +209,20 @@ def predict_sample(pipe, cfg, dataset: str):
 # ─────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Чихрийн шижин таамаглах — Logistic Regression")
-    parser.add_argument("--dataset", choices=["pima", "new"], default="new")
     parser.add_argument("--predict", action="store_true")
     args = parser.parse_args()
 
-    cfg = PIMA_CONFIG if args.dataset == "pima" else NEW_CONFIG
+    cfg = CONFIG
 
     print("=" * 65)
-    print(f"  🩺 Чихрийн шижин таамаглал — LOGISTIC REGRESSION  [{args.dataset.upper()}]")
+    print("  🩺 Чихрийн шижин таамаглал — LOGISTIC REGRESSION")
     print("=" * 65)
 
     X, y = load_and_prepare(cfg)
     pipe = train_logistic_regression(X, y, cfg)
 
     if args.predict:
-        predict_sample(pipe, cfg, args.dataset)
+        predict_sample(pipe, cfg)
 
     print("\n✔ Амжилттай дууслаа!\n")
 
