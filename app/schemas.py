@@ -149,3 +149,25 @@ class FoodPredictResult(BaseModel):
     message:           str
     recommendations:   list[str]
     model_used:        str
+
+
+# ── Admin food schemas ────────────────────────────────────────
+class DishIngredient(FoodItem):
+    display_name: Optional[str] = None
+    calories:     float = 0
+    carbohydrate: float = 0
+    sugars:       float = 0
+    fiber:        float = 0
+    protein:      float = 0
+    fat:          float = 0
+
+
+class DishCreateRequest(BaseModel):
+    name:        str = Field(..., min_length=2, max_length=120, example="Цуйван")
+    ingredients: list[FoodItem] = Field(..., min_length=1)
+
+
+class DishResponse(BaseModel):
+    id:          str
+    name:        str
+    ingredients: list[DishIngredient]

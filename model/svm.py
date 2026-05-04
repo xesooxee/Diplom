@@ -14,9 +14,10 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_auc_score
-from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split, RandomizedSearchCV
+from sklearn.svm import LinearSVC
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score, recall_score, roc_auc_score
+from sklearn.model_selection import StratifiedKFold, train_test_split, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
@@ -34,20 +35,9 @@ CONFIG = {
     "labels": ["Эрүүл", "Чихрийн шижин"],
 }
 
-# RandomizedSearchCV-д ашиглах parameter grid
-# Pipeline-тай ашигладаг тул "clf__" prefix шаардлагатай
-SVM_PARAM_DIST = {
-    "clf__C":      [0.1, 1.0, 10.0, 100.0],
-    "clf__gamma":  ["scale", "auto", 0.001, 0.01, 0.1],
-    "clf__kernel": ["rbf", "sigmoid"],
-}
-
-# Суурь SVM тохиргоо (class_weight, probability бол туning-д оролцохгүй)
-SVM_BASE = {
-    "class_weight": "balanced",
-    "probability":  True,
-    "random_state": 42,
-    "max_iter":     5000,
+# LinearSVC parameter grid — Pipeline-тай тул "clf__base_estimator__C" prefix
+LINEAR_SVM_PARAMS = {
+    "clf__estimator__C": [0.01, 0.1, 1.0, 10.0, 100.0],
 }
 
 def load_and_prepare(cfg):
@@ -65,7 +55,7 @@ def load_and_prepare(cfg):
                 df[col] = df[col].fillna(df[col].median())
 
     # Fit хийсэн encoder-уудыг pkl-д хадгалж, main.py inference-д ачаална.
-    EXPECTED_GENDER  = ["Female", "Male"]
+    EXPECTED_GENDER  = ["Female", "Male", "Other"]
     EXPECTED_SMOKING = ["No Info", "current", "ever", "former", "never", "not current"]
     encoders: dict = {}
     for col in cfg["categorical_cols"]:
@@ -96,37 +86,72 @@ def load_and_prepare(cfg):
 
 def train_svm(X, y, cfg):
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    print(f"\n Train: {len(X_train)}, Test: {len(X_test)}")
+    X_train_fit, X_val, y_train_fit, y_val = train_test_split(
+        X_train, y_train, test_size=0.15, random_state=42, stratify=y_train
+    )
+    neg = int((y_train_fit == 0).sum())
+    pos = int((y_train_fit == 1).sum())
+    print(f"\n Train: {len(X_train_fit)} (pos={pos}, neg={neg}), Val: {len(X_val)}, Test: {len(X_test)}")
 
-    # Pipeline: StandardScaler + SVC
+    # LinearSVC + CalibratedClassifierCV:
+    # - LinearSVC нь RBF SVM-аас 100x хурдан, том датасетэд тохиромжтой
+    # - class_weight="balanced" тэнцвэргүй датасетийг зохицуулна
+    # - CalibratedClassifierCV магадлал (predict_proba) гаргах боломж олгоно
     pipe = Pipeline([
         ("scaler", StandardScaler()),
-        ("clf", SVC(**SVM_BASE)),
+        ("clf", CalibratedClassifierCV(
+            LinearSVC(class_weight="balanced", max_iter=5000, random_state=42),
+            cv=3
+        )),
     ])
 
-    # ── Hyperparameter Tuning (RandomizedSearchCV) ──────────────
-    # RF болон XGBoost-тай адил оновчтой параметр хайна
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     search = RandomizedSearchCV(
         estimator=pipe,
-        param_distributions=SVM_PARAM_DIST,
-        n_iter=20,
+        param_distributions=LINEAR_SVM_PARAMS,
+        n_iter=5,
         scoring="roc_auc",
         cv=cv,
         verbose=1,
         random_state=42,
         n_jobs=-1,
     )
-    print("\n🔍 SVM Hyperparameter Tuning эхэлж байна...")
-    search.fit(X_train, y_train)
+    print("\n LinearSVM Hyperparameter Tuning эхэлж байна...")
+    search.fit(X_train_fit, y_train_fit)
 
-    best_pipe = search.best_estimator_
+    best_svc = search.best_estimator_
     print(f" Best params : {search.best_params_}")
     print(f" Best CV ROC-AUC: {search.best_score_:.4f}")
 
-    # ── Эцсийн үнэлгээ (test set) ────────────────────────────────
-    y_pred = best_pipe.predict(X_test)
-    y_prob = best_pipe.predict_proba(X_test)[:, 1]
+    # ── Threshold tuning (recall >= MIN_RECALL, дараа F1 maximize) ──
+    # Pipeline доторх scaler автоматаар хэрэглэгдэнэ
+    MIN_RECALL = 0.82
+    y_val_prob = best_svc.predict_proba(X_val)[:, 1]
+    thresholds = np.arange(0.1, 0.85, 0.005)
+    best_f1, best_thresh = 0, 0.5
+
+    for thresh in thresholds:
+        y_pred_t = (y_val_prob >= thresh).astype(int)
+        r = recall_score(y_val, y_pred_t, zero_division=0)
+        if r >= MIN_RECALL:
+            current_f1 = f1_score(y_val, y_pred_t, zero_division=0)
+            if current_f1 > best_f1:
+                best_f1, best_thresh = current_f1, thresh
+
+    if best_f1 == 0:
+        print(f"  ⚠ Recall >= {MIN_RECALL} шаардлага хангагдсангүй. F1-max ашиглав.")
+        for thresh in thresholds:
+            y_pred_t = (y_val_prob >= thresh).astype(int)
+            current_f1 = f1_score(y_val, y_pred_t, zero_division=0)
+            if current_f1 > best_f1:
+                best_f1, best_thresh = current_f1, thresh
+
+    val_recall = recall_score(y_val, (y_val_prob >= best_thresh).astype(int), zero_division=0)
+    print(f" Оновчтой Threshold: {best_thresh:.3f}  (val F1={best_f1:.4f}, val Recall={val_recall:.4f})")
+
+    # ── Эцсийн үнэлгээ ────────────────────────────────────────────
+    y_prob = best_svc.predict_proba(X_test)[:, 1]
+    y_pred = (y_prob >= best_thresh).astype(int)
 
     print(f"\n SVM Accuracy : {accuracy_score(y_test, y_pred):.4f}")
     print(f" ROC-AUC      : {roc_auc_score(y_test, y_prob):.4f}")
@@ -140,12 +165,15 @@ def train_svm(X, y, cfg):
     for i, label in enumerate(cfg["labels"]):
         print(f"  Бодит {label:>10} | {cm[i][0]:>15} | {cm[i][1]:>15}")
 
-    # Хадгалах
+    # Хадгалах — pipeline (scaler + LinearSVM) + threshold
     os.makedirs(cfg["model_dir"], exist_ok=True)
-    joblib.dump(best_pipe, os.path.join(cfg["model_dir"], "pipeline.pkl"))
+    joblib.dump(
+        {"model": best_svc, "best_threshold": best_thresh},
+        os.path.join(cfg["model_dir"], "pipeline.pkl")
+    )
     print(f"\n SVM модель хадгалагдлаа → {cfg['model_dir']}/pipeline.pkl")
 
-    return best_pipe
+    return best_svc, best_thresh
 
 
 def predict_sample(pipe, cfg):
@@ -180,10 +208,10 @@ def main():
     print("=" * 70)
 
     X, y = load_and_prepare(cfg)
-    pipe = train_svm(X, y, cfg)
+    best_svc, best_thresh = train_svm(X, y, cfg)
 
     if args.predict:
-        predict_sample(pipe, cfg)
+        predict_sample(best_svc, cfg)
 
     print("\n✔ Дууслаа!\n")
 

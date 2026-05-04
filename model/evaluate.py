@@ -196,7 +196,8 @@ def plot_feature_importance(rf_path: pathlib.Path):
     feat_names = ["gender", "age", "hypertension", "heart_disease",
                   "smoking_history", "bmi", "HbA1c_level", "blood_glucose_level"]
 
-    rf   = obj.named_steps["clf"]
+    pipe = obj["model"] if isinstance(obj, dict) else obj
+    rf   = pipe.named_steps["clf"]
     imps = pd.Series(rf.feature_importances_, index=feat_names).sort_values()
 
     fig, ax = plt.subplots(figsize=(8, 5))

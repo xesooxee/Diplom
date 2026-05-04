@@ -1,0 +1,68 @@
+[
+  {
+    "id": "488435ebdba94a16a4de66b9af9e457e",
+    "name": "Цуйван",
+    "ingredients": [
+      {
+        "name": "Rye flour, light",
+        "amount": 100.0,
+        "calories": 357.0,
+        "carbohydrate": 76.68,
+        "sugars": 0.93,
+        "fiber": 8.0,
+        "protein": 9.82,
+        "fat": 1.33
+      },
+      {
+        "name": "Babyfood, junior, lamb, meat",
+        "amount": 100.0,
+        "calories": 112.0,
+        "carbohydrate": 0.0,
+        "sugars": 0.0,
+        "fiber": 0.0,
+        "protein": 15.2,
+        "fat": 5.2
+      },
+      {
+        "name": "Soup, mix, dry, onion",
+        "amount": 100.0,
+        "calories": 293.0,
+        "carbohydrate": 65.07,
+        "sugars": 4.65,
+        "fiber": 6.6,
+        "protein": 7.48,
+        "fat": 0.34
+      },
+      {
+        "name": "Butter, salted",
+        "amount": 100.0,
+        "calories": 717.0,
+        "carbohydrate": 0.06,
+        "sugars": 0.06,
+        "fiber": 0.0,
+        "protein": 0.85,
+        "fat": 81.11
+      },
+      {
+        "name": "Oil, cocoa butter",
+        "amount": 100.0,
+        "calories": 884.0,
+        "carbohydrate": 0.0,
+        "sugars": 0.0,
+        "fiber": 0.0,
+        "protein": 0.0,
+        "fat": 100.0
+      },
+      {
+        "name": "Lamb, broiled, cooked, ground",
+        "amount": 100.0,
+        "calories": 283.0,
+        "carbohydrate": 0.0,
+        "sugars": 0.0,
+        "fiber": 0.0,
+        "protein": 24.75,
+        "fat": 19.65
+      }
+    ]
+  }
+]

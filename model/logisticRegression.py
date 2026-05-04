@@ -21,6 +21,8 @@ from sklearn.metrics import (
     accuracy_score,
     classification_report,
     confusion_matrix,
+    f1_score,
+    recall_score,
     roc_auc_score,
 )
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
@@ -78,7 +80,7 @@ def load_and_prepare(cfg: dict):
 
     # Категори багануудыг тоон болгох
     # Fit хийсэн encoder-уудыг pkl-д хадгалж, main.py inference-д ачаална.
-    EXPECTED_GENDER  = ["Female", "Male"]
+    EXPECTED_GENDER  = ["Female", "Male", "Other"]
     EXPECTED_SMOKING = ["No Info", "current", "ever", "former", "never", "not current"]
     encoders: dict = {}
     for col in cfg["categorical_cols"]:
@@ -120,8 +122,10 @@ def train_logistic_regression(X: pd.DataFrame, y: pd.Series, cfg: dict):
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
-
-    print(f"\n Train: {len(X_train)}, Test: {len(X_test)}")
+    X_train_fit, X_val, y_train_fit, y_val = train_test_split(
+        X_train, y_train, test_size=0.15, random_state=42, stratify=y_train
+    )
+    print(f"\n Train: {len(X_train_fit)}, Val: {len(X_val)}, Test: {len(X_test)}")
 
     # Pipeline: StandardScaler + Logistic Regression
     pipe = Pipeline([
@@ -131,15 +135,40 @@ def train_logistic_regression(X: pd.DataFrame, y: pd.Series, cfg: dict):
 
     # 5-Fold Cross-Validation
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    cv_scores = cross_val_score(pipe, X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=-1)
+    cv_scores = cross_val_score(pipe, X_train_fit, y_train_fit, cv=cv, scoring="roc_auc", n_jobs=-1)
     print(f" 5-Fold CV ROC-AUC: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
 
     # Загвар сургах
-    pipe.fit(X_train, y_train)
+    pipe.fit(X_train_fit, y_train_fit)
+
+    # ── Threshold tuning (recall >= MIN_RECALL, дараа F1 maximize) ──
+    MIN_RECALL = 0.82
+    y_val_prob = pipe.predict_proba(X_val)[:, 1]
+    thresholds = np.arange(0.1, 0.85, 0.005)
+    best_f1, best_thresh = 0, 0.5
+
+    for thresh in thresholds:
+        y_pred_t = (y_val_prob >= thresh).astype(int)
+        r = recall_score(y_val, y_pred_t, zero_division=0)
+        if r >= MIN_RECALL:
+            current_f1 = f1_score(y_val, y_pred_t, zero_division=0)
+            if current_f1 > best_f1:
+                best_f1, best_thresh = current_f1, thresh
+
+    if best_f1 == 0:
+        print(f"  ⚠ Recall >= {MIN_RECALL} шаардлага хангагдсангүй. F1-max ашиглав.")
+        for thresh in thresholds:
+            y_pred_t = (y_val_prob >= thresh).astype(int)
+            current_f1 = f1_score(y_val, y_pred_t, zero_division=0)
+            if current_f1 > best_f1:
+                best_f1, best_thresh = current_f1, thresh
+
+    val_recall = recall_score(y_val, (y_val_prob >= best_thresh).astype(int), zero_division=0)
+    print(f" Оновчтой Threshold: {best_thresh:.3f}  (val F1={best_f1:.4f}, val Recall={val_recall:.4f})")
 
     # Үнэлгээ
-    y_pred = pipe.predict(X_test)
     y_prob = pipe.predict_proba(X_test)[:, 1]
+    y_pred = (y_prob >= best_thresh).astype(int)
 
     acc = accuracy_score(y_test, y_pred)
     auc = roc_auc_score(y_test, y_prob)
@@ -167,10 +196,10 @@ def train_logistic_regression(X: pd.DataFrame, y: pd.Series, cfg: dict):
         bar = "█" * int(coef * 30)
         print(f"  {feat:<32} {bar} {coef:.4f}")
 
-    # Загвар хадгалах
+    # Загвар + threshold хадгалах
     os.makedirs(cfg["model_dir"], exist_ok=True)
     model_path = os.path.join(cfg["model_dir"], "pipeline.pkl")
-    joblib.dump(pipe, model_path)
+    joblib.dump({"model": pipe, "best_threshold": best_thresh}, model_path)
     print(f"\n Logistic Regression Pipeline хадгалагдлаа → {model_path}")
 
     return pipe

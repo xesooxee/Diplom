@@ -15,6 +15,7 @@ food_models:     dict = {}
 _label_encoders: dict = {}
 foods_df: pd.DataFrame = pd.DataFrame()
 DEFAULT_MODEL = "rf"
+cached_metrics:  dict = {}
 
 
 def load_all_models() -> None:
@@ -58,13 +59,14 @@ def load_all_models() -> None:
 
 
 def select_best_model() -> None:
-    global DEFAULT_MODEL
+    global DEFAULT_MODEL, cached_metrics
     metrics_path = BASE_DIR / "model" / "evaluation" / "metrics.json"
     if not metrics_path.exists():
         return
     try:
         with open(metrics_path) as f:
             metrics = json.load(f)
+        cached_metrics = metrics
         available = {k: v for k, v in metrics.items() if k in loaded_models}
         if not available:
             return
@@ -81,7 +83,7 @@ def _encode(data) -> np.ndarray:
         gender_enc  = int(_label_encoders["gender"].transform([data.gender])[0])
         smoking_enc = int(_label_encoders["smoking_history"].transform([data.smoking_history])[0])
     else:
-        gender_enc  = 0 if data.gender == "Female" else 1
+        gender_enc  = {"Female": 0, "Male": 1, "Other": 2}.get(data.gender, 1)
         smoking_enc = SMOKING_CLASSES.index(data.smoking_history)
     return np.array([[
         gender_enc, data.age, data.hypertension, data.heart_disease,

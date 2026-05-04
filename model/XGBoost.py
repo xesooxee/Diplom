@@ -1,7 +1,7 @@
 """
 САЙЖРУУЛСАН XGBoost — Чихрийн шижин таамаглал
 ===============================================
-Feature Engineering + SMOTE + Hyperparameter Tuning + Threshold Tuning
+Feature Engineering + scale_pos_weight + Hyperparameter Tuning + Threshold Tuning
 """
 
 import argparse
@@ -14,9 +14,8 @@ import pandas as pd
 
 import xgboost as xgb
 from sklearn.model_selection import train_test_split, RandomizedSearchCV, StratifiedKFold
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, f1_score, precision_recall_curve
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, f1_score, recall_score
 from sklearn.preprocessing import LabelEncoder
-from imblearn.over_sampling import SMOTE
 
 # ─────────────────────────────────────────────────────────────
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
@@ -78,34 +77,36 @@ def load_and_engineer(cfg):
 # Гол сургалтын функц
 # ─────────────────────────────────────────────────────────────
 def train_improved_xgboost(X, y, cfg, all_features):
-    # Train-test split (test set нь эцсийн үнэлгээнд л ашиглагдана)
+    # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
-
-    # Threshold tuning-д зориулсан validation set (train-аас тусгаарлана)
+    # Threshold tuning-д зориулсан validation set
     X_train_fit, X_val, y_train_fit, y_val = train_test_split(
         X_train, y_train, test_size=0.15, random_state=42, stratify=y_train
     )
 
-    # SMOTE ашиглан imbalance засах (зөвхөн train дээр!)
-    print(f"\n SMOTE хийж байна... (Original positive: {y_train_fit.sum()})")
-    smote = SMOTE(random_state=42)
-    X_train_res, y_train_res = smote.fit_resample(X_train_fit, y_train_fit)
-    print(f"   SMOTE-ийн дараа positive: {y_train_res.sum()}")
+    # scale_pos_weight: XGBoost-ын төрөлх тэнцвэргүй датасет боловсруулах арга
+    # SMOTE-с ялгаатай нь магадлалын калибрацийг алдагдуулахгүй
+    neg = int((y_train_fit == 0).sum())
+    pos = int((y_train_fit == 1).sum())
+    spw = round(neg / pos, 2)
+    print(f"\n Датасет: negative={neg:,}, positive={pos:,}")
+    print(f" scale_pos_weight = {neg}/{pos} = {spw}")
 
-    # Hyperparameter search
+    # Hyperparameter search — scale_pos_weight параметрт оруулна
     param_dist = {
-        'n_estimators': [400, 500, 600],
-        'max_depth': [5, 6, 7],
-        'learning_rate': [0.05, 0.1],
-        'subsample': [0.8, 0.9],
-        'colsample_bytree': [0.8, 0.9],
-        'min_child_weight': [1, 3],
-        'gamma': [0, 0.1],
+        'n_estimators':      [400, 500, 600],
+        'max_depth':         [5, 6, 7],
+        'learning_rate':     [0.05, 0.1],
+        'subsample':         [0.8, 0.9],
+        'colsample_bytree':  [0.8, 0.9],
+        'min_child_weight':  [1, 3],
+        'gamma':             [0, 0.1],
     }
 
     model = xgb.XGBClassifier(
+        scale_pos_weight=spw,
         eval_metric='auc',
         random_state=42,
         n_jobs=-1
@@ -122,28 +123,44 @@ def train_improved_xgboost(X, y, cfg, all_features):
         n_jobs=-1
     )
 
-    print("\n🔍 Hyperparameter Tuning эхэлж байна...")
-    search.fit(X_train_res, y_train_res)
+    print("\n Hyperparameter Tuning эхэлж байна...")
+    search.fit(X_train_fit, y_train_fit)
 
     best_model = search.best_estimator_
     print(f" Best params: {search.best_params_}")
     print(f" Best CV ROC-AUC: {search.best_score_:.4f}")
 
     # Validation set дээр threshold tuning (test set-ийг хөндөхгүй)
+    # Стратеги: recall >= MIN_RECALL байх threshold-уудаас хамгийн өндөр F1-тэй нэгийг сонгоно.
+    # Эмнэлзүйн тохиолдолд recall өндөр байх нь чухал (өвчтэй хүнийг алдаж болохгүй).
     y_val_prob = best_model.predict_proba(X_val)[:, 1]
 
-    thresholds = np.arange(0.3, 0.8, 0.01)
+    MIN_RECALL = 0.80
+    thresholds = np.arange(0.1, 0.85, 0.005)
     best_f1 = 0
     best_thresh = 0.5
 
     for thresh in thresholds:
         y_pred_t = (y_val_prob >= thresh).astype(int)
-        current_f1 = f1_score(y_val, y_pred_t)
-        if current_f1 > best_f1:
-            best_f1 = current_f1
-            best_thresh = thresh
+        r = recall_score(y_val, y_pred_t, zero_division=0)
+        if r >= MIN_RECALL:
+            current_f1 = f1_score(y_val, y_pred_t, zero_division=0)
+            if current_f1 > best_f1:
+                best_f1 = current_f1
+                best_thresh = thresh
 
-    print(f"\n Оновчтой Threshold (validation F1-max): {best_thresh:.3f}  (F1 = {best_f1:.4f})")
+    if best_f1 == 0:
+        print(f"  ⚠ Recall >= {MIN_RECALL} шаардлага хангагдсангүй. F1-max ашиглав.")
+        for thresh in thresholds:
+            y_pred_t = (y_val_prob >= thresh).astype(int)
+            current_f1 = f1_score(y_val, y_pred_t, zero_division=0)
+            if current_f1 > best_f1:
+                best_f1 = current_f1
+                best_thresh = thresh
+
+    val_recall = recall_score(y_val, (y_val_prob >= best_thresh).astype(int), zero_division=0)
+    print(f"\n Оновчтой Threshold (recall≥{MIN_RECALL}, F1-max): {best_thresh:.3f}"
+          f"  (val F1={best_f1:.4f}, val Recall={val_recall:.4f})")
 
     # Test set дээр таамаглал (threshold validation дээр сонгогдсон)
     y_prob = best_model.predict_proba(X_test)[:, 1]
@@ -193,7 +210,7 @@ def main():
     cfg = CONFIG
 
     print("=" * 75)
-    print("   САЙЖРУУЛСАН XGBoost — Feature Engineering + SMOTE + Tuning")
+    print("   САЙЖРУУЛСАН XGBoost — Feature Engineering + scale_pos_weight + Tuning")
     print("=" * 75)
 
     X, y, all_features = load_and_engineer(cfg)

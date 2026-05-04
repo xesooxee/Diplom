@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app import ml as ml_state
 from app.config import MODEL_REGISTRY
+from app.food_names import display_food_name
 from app.ml import get_features, get_risk, run_model
 from app.recommendations import recommend
 from app.schemas import (
@@ -19,6 +20,7 @@ FOOD_FEATURES = [
     "total_calories", "total_carbs", "total_sugars",
     "total_fiber", "total_protein", "total_fat",
     "carb_ratio", "sugar_fiber_ratio",
+    "glycemic_load", "net_carbs", "protein_fat_ratio",
 ]
 
 
@@ -44,6 +46,9 @@ def _calc_nutrition(foods: list[FoodItem]) -> dict:
 
     carb_ratio        = totals["carbohydrate"] / (totals["calories"] + 1e-5) * 400
     sugar_fiber_ratio = totals["sugars"] / (totals["fiber"] + 1)
+    net_carbs         = max(0.0, totals["carbohydrate"] - totals["fiber"])
+    glycemic_load     = net_carbs * carb_ratio / 100
+    protein_fat_ratio = totals["protein"] / (totals["fat"] + 1)
 
     return {
         "total_calories":    round(totals["calories"],     1),
@@ -54,23 +59,44 @@ def _calc_nutrition(foods: list[FoodItem]) -> dict:
         "total_fat":         round(totals["fat"],          1),
         "carb_ratio":        round(carb_ratio,             4),
         "sugar_fiber_ratio": round(sugar_fiber_ratio,      4),
+        "glycemic_load":     round(glycemic_load,          4),
+        "net_carbs":         round(net_carbs,              2),
+        "protein_fat_ratio": round(protein_fat_ratio,      4),
     }
 
 
 @router.get("/foods")
-def get_foods(search: Optional[str] = Query(default=None, description="Хоолны нэрээр хайх")):
+def get_foods(
+    search: Optional[str] = Query(default=None, description="Хоолны нэрээр хайх"),
+    limit: int = Query(default=5000, ge=1, le=10000, description="Буцаах мөрийн дээд тоо"),
+):
     if ml_state.foods_df.empty:
         raise HTTPException(status_code=503, detail="Хоолны датабаз ачаалагдаагүй байна.")
 
     df = ml_state.foods_df
+    df = df.copy()
+    df["_display_name"] = df.apply(
+        lambda row: display_food_name(row["name"], row.get("name_mn")),
+        axis=1,
+    )
     if search:
-        df = df[df["name"].str.lower().str.contains(search.lower(), na=False)]
+        q = search.lower()
+        df = df[
+            df["name"].str.lower().str.contains(q, na=False)
+            | df["_display_name"].str.lower().str.contains(q, na=False)
+        ]
 
     return {
         "total": len(df),
-        "foods": df[["name", "calories", "carbohydrate", "sugars", "fiber", "protein", "fat"]]
-                   .head(100)
-                   .to_dict(orient="records"),
+        "foods": [
+            {
+                **row,
+                "display_name": row["_display_name"],
+            }
+            for row in df[["name", "_display_name", "calories", "carbohydrate", "sugars", "fiber", "protein", "fat"]]
+                .head(limit)
+                .to_dict(orient="records")
+        ],
     }
 
 

@@ -25,11 +25,15 @@ def health():
 
 @router.get("/models")
 def get_models():
+    metrics = ml_state.cached_metrics
     return {
         key: {
             "name":      info["name"],
             "available": key in ml_state.loaded_models,
             "default":   key == ml_state.DEFAULT_MODEL,
+            "accuracy":  round(metrics[key]["Accuracy"], 4) if key in metrics else None,
+            "roc_auc":   round(metrics[key]["ROC-AUC"], 4) if key in metrics else None,
+            "f1":        round(metrics[key]["F1-score"], 4) if key in metrics else None,
         }
         for key, info in MODEL_REGISTRY.items()
     }
